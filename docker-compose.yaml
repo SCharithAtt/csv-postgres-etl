@@ -1,0 +1,120 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:13
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  # RabbitMQ for inter-service communication
+  rabbitmq:
+    image: rabbitmq:3-management
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS}
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+
+  # Ingestion Service
+  ingestion-service:
+    build: 
+      context: ./ingestion-service
+    volumes:
+      - ./data/input:/data/input
+      - ./logs:/logs
+    depends_on:
+      - rabbitmq
+    environment:
+      - SOURCE_FOLDER_PATH=${SOURCE_FOLDER_PATH}
+      - LOG_LEVEL=${LOG_LEVEL}
+      - RABBITMQ_HOST=${RABBITMQ_HOST}
+
+  # Validation Service
+  validation-service:
+    build: 
+      context: ./validation-service
+    depends_on:
+      - rabbitmq
+    environment:
+      - LOG_LEVEL=${LOG_LEVEL}
+      - RABBITMQ_HOST=${RABBITMQ_HOST}
+
+  # Transformation Service
+  transformation-service:
+    build: 
+      context: ./transformation-service
+    depends_on:
+      - rabbitmq
+    environment:
+      - LOG_LEVEL=${LOG_LEVEL}
+      - RABBITMQ_HOST=${RABBITMQ_HOST}
+
+  # Database Service
+  database-service:
+    build: 
+      context: ./database-service
+    depends_on:
+      - postgres
+      - rabbitmq
+    environment:
+      - POSTGRES_HOST=${POSTGRES_HOST}
+      - POSTGRES_PORT=${POSTGRES_PORT}
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - RABBITMQ_HOST=${RABBITMQ_HOST}
+
+  # Airflow Orchestration
+  airflow-webserver:
+    build: 
+      context: ./orchestration-service
+    command: webserver
+    depends_on:
+      - postgres
+    environment:
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres/${POSTGRES_DB}
+    volumes:
+      - ./orchestration-service/dags:/opt/airflow/dags
+      - ./logs:/opt/airflow/logs
+
+  airflow-scheduler:
+    build: 
+      context: ./orchestration-service
+    command: scheduler
+    depends_on:
+      - postgres
+    environment:
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres/${POSTGRES_DB}
+    volumes:
+      - ./orchestration-service/dags:/opt/airflow/dags
+      - ./logs:/opt/airflow/logs
+
+  # GUI Service
+  gui-service:
+    build: 
+      context: ./gui-service
+    ports:
+      - "5000:5000"
+    depends_on:
+      - database-service
+    environment:
+      - DATABASE_SERVICE_URL=http://database-service
+      - LOG_LEVEL=${LOG_LEVEL}
+
+volumes:
+  postgres_data:
+  logs:
+
+networks:
+  default:
+    driver: bridge
